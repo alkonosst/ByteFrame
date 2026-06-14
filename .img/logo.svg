@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 20 240 150" width="240" height="150">
+  <!-- Concept: COBS framing wraps the payload -> stone brackets enclosing the amber pack, -->
+  <!-- flanked by the 0x00 delimiter squares on the wire -->
+  <!-- inner pack = BytePack payload -->
+  <polygon points="120,58 160,78 120,98 80,78"   fill="#FCD34D"/>
+  <polygon points="80,78 120,98 120,138 80,118"  fill="#F59E0B"/>
+  <polygon points="160,78 120,98 120,138 160,118" fill="#B45309"/>
+  <!-- stone framing brackets -->
+  <g fill="none" stroke="#A8A29E" stroke-width="12" stroke-linejoin="round" stroke-linecap="round">
+    <path d="M74,48 L52,48 L52,142 L74,142"/>
+    <path d="M166,48 L188,48 L188,142 L166,142"/>
+  </g>
+  <!-- 0x00 delimiter bytes that bound the frame on the wire -->
+  <rect x="25" y="88" width="14" height="14" rx="3" fill="#A8A29E"/>
+  <rect x="201" y="88" width="14" height="14" rx="3" fill="#A8A29E"/>
+</svg>

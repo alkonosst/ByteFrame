@@ -16,6 +16,9 @@
     <img src="https://badges.registry.platformio.org/packages/alkonosst/library/ByteFrame.svg" alt="PlatformIO Registry">
   </a>
   <br><br>
+  <a href="https://codecov.io/github/alkonosst/ByteFrame">
+    <img src="https://img.shields.io/codecov/c/github/alkonosst/ByteFrame?style=for-the-badge&logo=codecov&logoColor=white&labelColor=F01F7A" alt="Coverage">
+  </a>
   <a href="https://opensource.org/licenses/MIT">
     <img src="https://img.shields.io/badge/license-MIT-blue.svg?style=for-the-badge&color=blue" alt="License">
   </a>
@@ -35,6 +38,7 @@
 - [Installation](#installation)
   - [PlatformIO](#platformio)
   - [Arduino IDE](#arduino-ide)
+  - [CMake](#cmake)
 - [Usage](#usage)
   - [Including the library](#including-the-library)
   - [Namespace](#namespace)
@@ -54,7 +58,7 @@
 
 # Description
 
-**ByteFrame** is a header-only C++11 Arduino library that delimits packets over raw byte streams (UART, RS-485, radios, raw TCP...). It answers the question a stream cannot: _where does each packet start and end, and did it arrive intact?_
+**ByteFrame** is a header-only C++11 embedded/native library that delimits packets over raw byte streams (UART, RS-485, radios, raw TCP...). It answers the question a stream cannot: _where does each packet start and end, and did it arrive intact?_
 
 Each frame is the payload plus a selectable CRC, encoded with [COBS](https://en.wikipedia.org/wiki/Consistent_Overhead_Byte_Stuffing) and terminated by a single `0x00` delimiter. COBS guarantees the delimiter never appears inside a frame, so the decoder can always resynchronize after corruption or after joining a stream mid-frame. The payload is just bytes: ByteFrame does not care if it is a [BytePack](https://github.com/alkonosst/BytePack) message, a protobuf, or a raw struct.
 
@@ -134,6 +138,23 @@ lib_deps =
 2. Go to **Sketch > Manage Libraries...**
 3. Search for **"ByteFrame"**.
 4. Click **Install**.
+
+## CMake
+
+For desktop C++ projects, pull the library with `FetchContent` and link the `alkonosst::ByteFrame`
+target:
+
+```cmake
+include(FetchContent)
+FetchContent_Declare(
+  ByteFrame
+  GIT_REPOSITORY https://github.com/alkonosst/ByteFrame.git
+  GIT_TAG        vx.y.z # pin a release tag (recommended), or a branch/commit
+)
+FetchContent_MakeAvailable(ByteFrame)
+
+target_link_libraries(your_app PRIVATE alkonosst::ByteFrame)
+```
 
 # Usage
 

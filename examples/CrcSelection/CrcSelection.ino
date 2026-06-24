@@ -22,8 +22,9 @@ constexpr size_t MAX_PAYLOAD = 16;
 
 // Encode the payload with policy Crc, decode it back with the same policy, and report the result.
 // The buffer size adapts to the policy through getMaxEncodedSize<Crc>().
-template <class Crc>
-void showPolicy(const char* name, const uint8_t* payload, const size_t payload_size) {
+// clang-format off
+template <class Crc> void showPolicy(const char* name, const uint8_t* payload, const size_t payload_size) {
+  // clang-format on
   uint8_t frame[ByteFrame::getMaxEncodedSize<Crc>(MAX_PAYLOAD)] = {};
   const size_t frame_size = ByteFrame::encode<Crc>(payload, payload_size, frame, sizeof(frame));
 

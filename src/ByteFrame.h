@@ -458,9 +458,12 @@ class Decoder {
     for (size_t i = 0; i < payload_size; i++)
       crc = Crc::update(crc, _buffer[i]);
 
-    if (Crc::finalize(crc) != received) {
-      _stats.crc_errors++;
-      return;
+    // With NoCrc (Crc::SIZE == 0) both received and Crc::finalize() are always 0, so this check can
+    // never fail: the branch and its body are unreachable for that policy and excluded from
+    // coverage
+    if (Crc::finalize(crc) != received) { // GCOVR_EXCL_BR_LINE
+      _stats.crc_errors++;                // GCOVR_EXCL_LINE
+      return;                             // GCOVR_EXCL_LINE
     }
 
     _payload_size    = payload_size;
@@ -596,18 +599,24 @@ size_t decode(const uint8_t* frame, const size_t frame_size, uint8_t* payload,
     // literal block bytes
     for (size_t i = append_zero ? 0 : 1; i <= block; i++) {
       const uint8_t byte = (i == 0) ? uint8_t(0x00) : frame[in++];
-      if (produced < payload_size) {
+
+      // With NoCrc (Crc::SIZE == 0) payload_size == total, so produced never reaches it: the else
+      // (rebuilding the received CRC) is unreachable for that policy and excluded from coverage
+      if (produced < payload_size) { // GCOVR_EXCL_BR_LINE
         payload[produced] = byte;
         crc               = Crc::update(crc, byte);
       } else {
-        received = crc_type(received | (crc_type(byte) << (8 * (produced - payload_size))));
+        // clang-format off
+        received = crc_type( received | (crc_type(byte) << (8 * (produced - payload_size)))); // GCOVR_EXCL_LINE
+        // clang-format on
       }
       produced++;
     }
     append_zero = (code != 0xFF);
   }
 
-  if (Crc::finalize(crc) != received) return 0;
+  // Unreachable with NoCrc (Crc::SIZE == 0): received and Crc::finalize() are both 0 (see above)
+  if (Crc::finalize(crc) != received) return 0; // GCOVR_EXCL_BR_LINE
 
   return payload_size;
 }

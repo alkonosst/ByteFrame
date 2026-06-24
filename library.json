@@ -1,6 +1,6 @@
 {
   "name": "ByteFrame",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "authors": {
     "name": "Maximiliano Ramirez",
     "email": "maximiliano.ramirezbravo@gmail.com"
@@ -10,7 +10,7 @@
     "url": "https://github.com/alkonosst/ByteFrame.git"
   },
   "description": "Header-only C++11 framing library with zero dynamic allocation. Delimits packets on raw byte streams with COBS, a selectable CRC (none/CRC8/CRC16/CRC32) and a 0x00 delimiter. Incremental fixed-buffer decoder. Pairs with BytePack for type-safe payloads.",
-  "keywords": "framing, frame, cobs, crc, crc8, crc16, crc32, delimiter, packet, stream, serial, uart, rs485, protocol, header-only, embedded, arduino, esp32, static",
+  "keywords": "framing, frame, cobs, crc, crc8, crc16, crc32, delimiter, packet, stream, serial, uart, rs485, protocol, header-only, embedded, native, arduino, esp32, static",
   "license": "MIT",
   "frameworks": "*",
   "headers": ["ByteFrame.h"]

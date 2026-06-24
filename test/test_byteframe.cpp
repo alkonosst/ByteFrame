@@ -596,6 +596,226 @@ void test_crc_variants_round_trip() {
 }
 
 /* ---------------------------------------------------------------------------------------------- */
+/*                                  All paths across CRC policies                                 */
+/* ---------------------------------------------------------------------------------------------- */
+
+/**
+ * Encoder, Decoder, encode(), decode() and getMaxEncodedSize() are templates: gcov tracks every CRC
+ * instantiation separately, so a branch exercised only for the default Crc16CcittFalse still counts
+ * as uncovered for NoCrc, Crc8Smbus and Crc32IsoHdlc. The templated helpers below drive every error
+ * and edge path and are instantiated once per policy so each instantiation reaches full coverage.
+ */
+
+// Encode a payload that crosses a full COBS block and contains zeros into every output-buffer
+// capacity from 0 to the worst case. The full capacity exercises the happy path; each smaller
+// capacity trips a different overflow branch (literal byte, encoded zero, full-block successor, CRC
+// bytes, trailing delimiter). Every frame that is produced must round-trip back to the payload.
+template <class Crc>
+void exerciseEncoderOverflow() {
+  constexpr size_t N = 300; // > 254 so the payload crosses a full COBS block boundary
+  uint8_t payload[N];
+  for (size_t i = 0; i < N; i++) {
+    payload[i] = uint8_t(1 + (i % 254)); // never zero
+  }
+  payload[260] = 0x00; // zeros past the first block boundary (encoded-zero overflow paths)
+  payload[280] = 0x00;
+
+  uint8_t frame[getMaxEncodedSize<Crc>(N)] = {};
+  uint8_t out[N]                           = {};
+  bool produced                            = false;
+  bool overflowed                          = false;
+
+  for (size_t cap = 0; cap <= sizeof(frame); cap++) {
+    const size_t written = encode<Crc>(payload, N, frame, cap);
+    if (written == 0) {
+      overflowed = true;
+      continue;
+    }
+    produced = true;
+    TEST_ASSERT_TRUE(written <= getMaxEncodedSize<Crc>(N));
+    TEST_ASSERT_EQUAL(N, decode<Crc>(frame, written, out, sizeof(out)));
+    TEST_ASSERT_EQUAL_HEX8_ARRAY(payload, out, N);
+  }
+
+  TEST_ASSERT_TRUE(produced);
+  TEST_ASSERT_TRUE(overflowed);
+
+  // finalize() on a fresh encoder with nothing fed yields no frame (the "empty" guard)
+  Encoder<Crc> empty(frame, sizeof(frame));
+  TEST_ASSERT_EQUAL(0, empty.finalize());
+}
+
+// A payload whose data (payload + CRC) is exactly 254 bytes encodes to a single full COBS block
+// (code 0xFF) with no trailing code byte: this exercises the block-boundary close at finalize().
+template <class Crc>
+void exerciseEncoderFullBlock() {
+  constexpr size_t payload_size                       = 254 - Crc::SIZE; // data == 254 == one block
+  uint8_t payload[payload_size]                       = {};
+  uint8_t frame[getMaxEncodedSize<Crc>(payload_size)] = {};
+
+  size_t written = 0;
+  for (unsigned seed = 0; seed < 256; seed++) {
+    for (size_t i = 0; i < payload_size; i++) {
+      payload[i] = uint8_t(1 + ((i + seed) % 254));
+    }
+    written = encode<Crc>(payload, payload_size, frame, sizeof(frame));
+    // 1 code byte + 254 data bytes + delimiter == 256: reached only when the last data byte (the
+    // top CRC byte) is non-zero, so the block closes "full" instead of via an encoded zero.
+    if (written == 256 && frame[0] == 0xFF) break;
+  }
+
+  TEST_ASSERT_EQUAL(256, written);
+  TEST_ASSERT_EQUAL_HEX8(0xFF, frame[0]);
+  TEST_ASSERT_EQUAL_HEX8(DELIMITER, frame[written - 1]);
+
+  uint8_t out[payload_size] = {};
+  TEST_ASSERT_EQUAL(payload_size, decode<Crc>(frame, written, out, sizeof(out)));
+  TEST_ASSERT_EQUAL_HEX8_ARRAY(payload, out, payload_size);
+}
+
+// Drive every Decoder path: idle delimiter, happy frame, mid-block and too-short malformed frames,
+// overflow on a literal byte and on an implicit inter-block zero, recovery, and a CRC mismatch.
+// Templated on MaxPayload as well, because each Decoder<MaxPayload, Crc> is a distinct gcov
+// instantiation that must be exercised in full.
+template <size_t MaxPayload, class Crc>
+void exerciseDecoderPaths() {
+  Decoder<MaxPayload, Crc> decoder;
+
+  // getPayloadSize() before any frame is available -> 0
+  TEST_ASSERT_EQUAL(0, decoder.getPayloadSize());
+
+  // Idle delimiter: an empty frame is ignored, not an error
+  TEST_ASSERT_FALSE(decoder.feed(DELIMITER));
+
+  // Happy path
+  const uint8_t payload[8] = {0x11, 0x00, 0x22, 0xFF, 0x00, 0xAB, 0xCD, 0x00};
+  uint8_t frame[getMaxEncodedSize<Crc>(sizeof(payload))] = {};
+  size_t written = encode<Crc>(payload, sizeof(payload), frame, sizeof(frame));
+  TEST_ASSERT_TRUE(feedAll(decoder, frame, written));
+  TEST_ASSERT_EQUAL(sizeof(payload), decoder.getPayloadSize());
+  TEST_ASSERT_EQUAL_HEX8_ARRAY(payload, decoder.getPayload(), sizeof(payload));
+  TEST_ASSERT_EQUAL(1, decoder.getStats().frames_ok);
+
+  // Malformed: the delimiter arrives in the middle of a block
+  decoder.feed(uint8_t(0x05)); // announces 4 data bytes
+  decoder.feed(uint8_t(0x11));
+  decoder.feed(uint8_t(0x22));
+  TEST_ASSERT_FALSE(decoder.feed(DELIMITER));
+  TEST_ASSERT_EQUAL(1, decoder.getStats().malformed);
+
+  // Malformed: a frame decoding to fewer than 1 + Crc::SIZE bytes is too short (only meaningful
+  // when the policy carries a CRC; with NoCrc a single decoded byte is already a valid frame)
+  if (Crc::SIZE > 0) {
+    decoder.feed(uint8_t(0x02)); // announces 1 data byte
+    decoder.feed(uint8_t(0x41));
+    TEST_ASSERT_FALSE(decoder.feed(DELIMITER));
+    TEST_ASSERT_EQUAL(2, decoder.getStats().malformed);
+  }
+
+  // Overflow on a literal byte: a run of non-zero bytes longer than the buffer
+  uint8_t big[MaxPayload + 8];
+  for (size_t i = 0; i < sizeof(big); i++) {
+    big[i] = uint8_t(1 + (i % 254));
+  }
+  uint8_t bigframe[getMaxEncodedSize<Crc>(sizeof(big))] = {};
+  written = encode<Crc>(big, sizeof(big), bigframe, sizeof(bigframe));
+  TEST_ASSERT_FALSE(feedAll(decoder, bigframe, written));
+  TEST_ASSERT_EQUAL(1, decoder.getStats().overflows);
+
+  // The decoder recovers after the overflow
+  written = encode<Crc>(payload, sizeof(payload), frame, sizeof(frame));
+  TEST_ASSERT_TRUE(feedAll(decoder, frame, written));
+
+  // Overflow exactly on an implicit inter-block zero: a zero placed right at the buffer limit, so
+  // the buffer fills on the literal run and the next push is the implied zero between blocks
+  uint8_t big_zero[MaxPayload + 8];
+  for (size_t i = 0; i < sizeof(big_zero); i++) {
+    big_zero[i] = uint8_t(1 + (i % 254));
+  }
+  big_zero[MaxPayload + Crc::SIZE]                            = 0x00;
+  uint8_t bigzframe[getMaxEncodedSize<Crc>(sizeof(big_zero))] = {};
+  written               = encode<Crc>(big_zero, sizeof(big_zero), bigzframe, sizeof(bigzframe));
+  const uint32_t before = decoder.getStats().overflows;
+  TEST_ASSERT_FALSE(feedAll(decoder, bigzframe, written));
+  TEST_ASSERT_EQUAL(before + 1, decoder.getStats().overflows);
+
+  // CRC mismatch: corrupt a payload byte, keeping it non-zero so the COBS structure survives (only
+  // a policy that carries a CRC can detect this)
+  if (Crc::SIZE > 0) {
+    written                   = encode<Crc>(payload, sizeof(payload), frame, sizeof(frame));
+    frame[1]                  = (frame[1] == 0x7F) ? 0x7E : 0x7F;
+    const uint32_t crc_before = decoder.getStats().crc_errors;
+    TEST_ASSERT_FALSE(feedAll(decoder, frame, written));
+    TEST_ASSERT_EQUAL(crc_before + 1, decoder.getStats().crc_errors);
+  }
+}
+
+// Drive every one-shot decode() path: happy round-trip, optional trailing delimiter, capacity
+// rejection, truncated COBS, interior zero, too-short frame and CRC mismatch.
+template <class Crc>
+void exerciseDecodePaths() {
+  const uint8_t payload[8] = {0x11, 0x00, 0x22, 0xFF, 0x00, 0xAB, 0xCD, 0x00};
+  uint8_t frame[getMaxEncodedSize<Crc>(sizeof(payload))] = {};
+  const size_t written         = encode<Crc>(payload, sizeof(payload), frame, sizeof(frame));
+  uint8_t out[sizeof(payload)] = {};
+
+  // Happy path
+  TEST_ASSERT_EQUAL(sizeof(payload), decode<Crc>(frame, written, out, sizeof(out)));
+  TEST_ASSERT_EQUAL_HEX8_ARRAY(payload, out, sizeof(payload));
+
+  // The trailing delimiter is optional: without it the first/second pass loops exit on frame_size
+  TEST_ASSERT_EQUAL(sizeof(payload), decode<Crc>(frame, written - 1, out, sizeof(out)));
+
+  // Output buffer too small for the payload
+  TEST_ASSERT_EQUAL(0, decode<Crc>(frame, written, out, sizeof(out) - 1));
+
+  // Truncated COBS block: the code byte announces more bytes than the frame provides
+  const uint8_t truncated[3] = {0x05, 0x11, 0x22};
+  TEST_ASSERT_EQUAL(0, decode<Crc>(truncated, sizeof(truncated), out, sizeof(out)));
+
+  // Interior zero: a zero may not appear inside a COBS block
+  const uint8_t interior_zero[3] = {0x03, 0x11, 0x00};
+  TEST_ASSERT_EQUAL(0, decode<Crc>(interior_zero, sizeof(interior_zero), out, sizeof(out)));
+
+  // Too short: not even one payload byte plus the CRC. With a CRC, a 1-byte decode is too short;
+  // with NoCrc only an empty frame (zero decoded bytes) is too short.
+  if (Crc::SIZE > 0) {
+    const uint8_t too_short[3] = {0x02, 0x41, 0x00}; // decodes to 1 byte < 1 + Crc::SIZE
+    TEST_ASSERT_EQUAL(0, decode<Crc>(too_short, sizeof(too_short), out, sizeof(out)));
+  } else {
+    const uint8_t empty_frame[1] = {0x00}; // decodes to 0 bytes < 1
+    TEST_ASSERT_EQUAL(0, decode<Crc>(empty_frame, sizeof(empty_frame), out, sizeof(out)));
+  }
+
+  // CRC mismatch (only a policy that carries a CRC can detect this)
+  if (Crc::SIZE > 0) {
+    uint8_t corrupted[getMaxEncodedSize<Crc>(sizeof(payload))] = {};
+    for (size_t i = 0; i < written; i++) {
+      corrupted[i] = frame[i];
+    }
+    corrupted[1] = (corrupted[1] == 0x7F) ? 0x7E : 0x7F;
+    TEST_ASSERT_EQUAL(0, decode<Crc>(corrupted, written, out, sizeof(out)));
+  }
+}
+
+// Run every path helper for one CRC policy. The Decoder paths run for each MaxPayload the suite
+// instantiates (16, 32, 64), since gcov tracks every Decoder<MaxPayload, Crc> separately.
+template <class Crc>
+void exerciseAllPaths() {
+  exerciseEncoderOverflow<Crc>();
+  exerciseEncoderFullBlock<Crc>();
+  exerciseDecodePaths<Crc>();
+  exerciseDecoderPaths<16, Crc>();
+  exerciseDecoderPaths<32, Crc>();
+  exerciseDecoderPaths<64, Crc>();
+}
+
+void test_all_paths_no_crc() { exerciseAllPaths<NoCrc>(); }
+void test_all_paths_crc8() { exerciseAllPaths<Crc8Smbus>(); }
+void test_all_paths_crc16() { exerciseAllPaths<Crc16CcittFalse>(); }
+void test_all_paths_crc32() { exerciseAllPaths<Crc32IsoHdlc>(); }
+
+/* ---------------------------------------------------------------------------------------------- */
 /*                                             Stress                                             */
 /* ---------------------------------------------------------------------------------------------- */
 
@@ -766,6 +986,12 @@ int runUnityTests(void) {
   RUN_TEST(test_crc_policies_check_values);
   RUN_TEST(test_decode_one_shot);
   RUN_TEST(test_crc_variants_round_trip);
+
+  // All paths across CRC policies
+  RUN_TEST(test_all_paths_no_crc);
+  RUN_TEST(test_all_paths_crc8);
+  RUN_TEST(test_all_paths_crc16);
+  RUN_TEST(test_all_paths_crc32);
 
   // Stress
   RUN_TEST(test_stress_round_trip_random_chunks);
